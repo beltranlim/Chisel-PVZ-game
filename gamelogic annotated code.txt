@@ -1,0 +1,532 @@
+//////////////////////////////////////////////////////////////////////////////
+// Authors: Luca Pezzarossa
+// Copyright: Technical University of Denmark - 2025
+// Comments:
+// This file contains the game logic. Implement yours here.
+//////////////////////////////////////////////////////////////////////////////
+
+import chisel3._
+import chisel3.util._
+import chisel3.util.random.LFSR
+
+class GameLogic(SpriteNumber: Int, BackTileNumber: Int) extends Module { //sprite number: total number of sprites. Backtilenumber number of tiles in the background layer
+  val io = IO(new Bundle { //defines input/output interface of gamelogic module
+    //Buttons
+    val btnC = Input(Bool()) //center button
+    val btnU = Input(Bool()) //up
+    val btnL = Input(Bool()) //left
+    val btnR = Input(Bool()) //right
+    val btnD = Input(Bool()) //down
+
+    //Switches
+    val sw = Input(Vec(8, Bool())) //vector of 8 booleen switch inputs
+
+    //Leds
+    val led = Output(Vec(8, Bool())) //vector of 8 led outputs
+
+    //GraphicEngineVGA
+    //Sprite control input
+    val spriteXPosition = Output(Vec(SpriteNumber, SInt(11.W))) //-1024 to 1023, specifies horizontal position on screen
+    val spriteYPosition = Output(Vec(SpriteNumber, SInt(10.W))) //-512 to 511, specifies vertical position on screen
+    val spriteVisible = Output(Vec(SpriteNumber, Bool())) //controls sprite is visible or hidden
+    val spriteFlipHorizontal = Output(Vec(SpriteNumber, Bool())) //flips sprite horizontally
+    val spriteFlipVertical = Output(Vec(SpriteNumber, Bool())) //flips sprite vertically
+
+    //Viewbox control output
+    val viewBoxX = Output(UInt(10.W)) //0 to 640, horizontal x coord of the upper left corner of the current view
+    val viewBoxY = Output(UInt(9.W)) //0 to 480, horizontal y coord of the upper left corner of the current view
+
+
+    //Background buffer output
+    val backBufferWriteData = Output(UInt(log2Up(BackTileNumber).W)) //This signal outputs the index of the tile to be written into the background buffer
+    val backBufferWriteAddress = Output(UInt(11.W))// This is the address of the tilemap entry where the tile (backBufferWriteData) should be written. It points to a position in the background buffer RAM that stores the visible tile layout.
+    val backBufferWriteEnable = Output(Bool()) //enable signal for the background memory. When true.B, the background tile at backBufferWriteAddress is updated with backBufferWriteData.
+
+    //Status
+    val newFrame = Input(Bool()) //An input signal that becomes true.B for one clock cycle at the start of every VGA frame (typically 60Hz).
+    val frameUpdateDone = Output(Bool()) //An output signal from your game logic. It goes true.B for one clock cycle when your logic is done computing all sprite and background updates for that frame.
+  })
+
+  // Setting all led outputs to zero
+  // It can be done by the single expression below...
+  io.led := Seq.fill(8)(false.B)
+
+  // Or one by one...
+  //io.led(0) := false.B
+  //io.led(0) := false.B
+  //io.led(1) := false.B
+  //io.led(2) := false.B
+  //io.led(3) := false.B
+  //io.led(4) := false.B
+  //io.led(5) := false.B
+  //io.led(6) := false.B
+  //io.led(7) := false.B
+
+  // Or with a for loop.
+  //for (i <- 0 until 8) {
+  //  io.led(i) := false.B
+  //}
+
+  //Setting all sprite control outputs to zero
+  io.spriteXPosition := Seq.fill(SpriteNumber)(0.S) //Sets the X-position of every sprite to 0.
+  io.spriteYPosition := Seq.fill(SpriteNumber)(0.S) //Sets the Y-position of every sprite to 0.
+  io.spriteVisible := Seq.fill(SpriteNumber)(false.B) //Makes all sprites invisible by default.
+  io.spriteFlipHorizontal := Seq.fill(SpriteNumber)(false.B) //Disables horizontal flipping for all sprites.
+  io.spriteFlipVertical := Seq.fill(SpriteNumber)(false.B) //Disables vertical flipping (top-to-bottom mirroring).
+
+  //Setting the viewbox control outputs to zero
+  io.viewBoxX := 0.U //Sets the horizontal position of the viewbox (camera) to 0
+  io.viewBoxY := 0.U //Sets the vertical position of the viewbox to 0.
+
+  //Setting the background buffer outputs to zero
+  io.backBufferWriteData := 0.U //Sets the tile index to write into the background tilemap to 0
+  io.backBufferWriteAddress := 0.U //Sets the address in the background buffer to 0
+  io.backBufferWriteEnable := false.B //Disables writing to the background buffer.
+
+  //Setting frame done to zero
+  io.frameUpdateDone := false.B //o this line is usually placed in the default or reset logic (e.g., at the beginning of your module or in the idle state) to initialize the output.
+
+
+
+  /////////////////////////////////////////////////////////////////
+  // Write here your game logic
+  // (you might need to change the initialization values above)
+  /////////////////////////////////////////////////////////////////
+  /////////////////////////////////////////////////////////////////
+  // Write here your game logic
+  /////////////////////////////////////////////////////////////////
+
+  // 1) “Start” button – one‐shot latch
+  val started    = RegInit(false.B) //Creates a register and initializes it to false.B. This holds the state of whether the game has started.
+  val btnC_r     = RegNext(io.btnC, false.B) //Creates a 1-cycle delayed version of the current btnC input. btnC_r stores the value of btnC from the previous clock cycle.
+  when(io.btnC && !btnC_r) { started := true.B } //rising-edge detector. If the current button value is high (true.B), and the previous value (btnC_r) was low (false.B), then the button has just been pressed.
+
+  // 2) FSM states & PRNG
+  val idle    :: compute :: done :: Nil = Enum(3) //Defines an enumeration with 3 named states
+  val stateReg                     = RegInit(idle) //Declares a register that holds the current FSM state. It starts in the idle state (RegInit(idle)), which is the initial state when the system powers on or resets.
+  val rnd32      = LFSR(32,         io.newFrame) //create two 32-bit pseudo-random numbers, updated on each new frame. rnd32 updates directly with io.newFrame
+  val rnd32b     = LFSR(32, RegNext(io.newFrame)) //rnd32b uses RegNext(io.newFrame) → delayed by one cycle. This creates two slightly different random sequences
+  val mixed      = rnd32 ^ rnd32b //Combines the two LFSR values using a bitwise XOR.mixed can be used for: random zombie spawn lanes
+
+  // 3) Shooter registers
+  val shooterY = RegInit(224.S(10.W)) //224 puts shooter in the middle of the screen
+  val shooterX = RegInit(0.S(11.W)) //0 puts the shooter on the left
+
+  // 3a) Shooter animation regs
+  val shooterAnimCnt    = RegInit(0.U(8.W))   // Used to time how long the shooter stays in the idle animation before flipping between two idle sprites.
+  val shooterAnimToggle = RegInit(false.B)    // Controls which idle sprite to show (e.g., sprite 0 vs sprite 15) for a flickering or breathing idle effect.
+  val shootTimer        = RegInit(0.U(6.W))   // counts down shooting frame
+  val shootDuration     = 15.U                // 0.25s @60Hz. Constant value: 15 frames, equivalent to 0.25 seconds at 60 FPS. shoot timer when projectile is fired
+  val idlePeriod        = 30.U                // 0.5s  @60Hz. Constant value: 30 frames, equivalent to 0.5 seconds at 60 FPS. Controls how often the idle animation toggles.
+
+  // 3b) Two-bar 30s timer (15s per bar)
+  val timerFrameCnt = RegInit(0.U(12.W))    // 12 bit unsigned. starts at o and counts frames (0…4095)
+  val timerBars     = RegInit(2.U(2.W))     // 2 bars → 1 → 0. A 2-bit unsigned register that holds the current value of a visual 2-bar timer.
+
+  // 3c) Frame-based toggles for integer stepping
+  //   • altFrame flips every frame → for Phase 2 full=2/1 alternating
+  //   • quarterCnt cycles 0→1→2→3→0 → for Phase 1 wounded=1 for 3/4, 0 for 1/4
+  val altFrame   = RegInit(false.B) //It toggles every frame — flipping between false and true
+  val quarterCnt = RegInit(0.U(2.W)) //acts like a 1-of-4 cycle counter.
+  when(io.newFrame) {
+    altFrame   := ~altFrame //toggles every frame
+    quarterCnt := quarterCnt + 1.U //cycles every 4 frames
+  }
+
+  // 3d) Phase-based integer speeds (no fractional accumulators)
+  //    Phase 1 (timerBars==2): full=1; wounded=1,1,1,0 → avg 0.75
+  //    Phase 2 (timerBars<2): full=2,1,2,1 → avg 1.5; wounded always 1
+  val baseSpeed    = Mux(timerBars < 2.U, Mux(altFrame, 2.S, 1.S), 1.S) //This defines the base speed (in pixels per frame) for a healthy zombie, and it changes depending on the game phase.
+  val woundedSpeed = Mux(timerBars === 2.U, Mux(quarterCnt =/= 3.U, 1.S, 0.S), 1.S) //This defines the movement speed for wounded zombies, and it also varies by game phase.
+
+
+  // 4) Primary zombie: HP & movement
+  val zombieX           = RegInit(640.S(11.W)) //assign zombie just outside the screen to the right
+  val zombieY           = RegInit(32.S(10.W)) //represents first vertical lane
+  val primaryAnimCnt    = RegInit(0.U(8.W)) //zombie animation frame counter
+  val primaryAnimToggle = RegInit(false.B) //flipes every N frames for sprite animation
+  val hpPrimary         = RegInit(2.U(2.W)) //health of zombie        // on spawn → 2 HP
+  val killPrimary       = RegInit(false.B) //latch that becomes true when zombie is killed
+  val killDelayPrimary  = RegInit(0.U(16.W)) //count frames since kill, used for respawn delay
+  val firstSpawnP       = RegInit(true.B) //Ensures the zombie doesn’t move until first spawn has been triggered.
+  val primarySlowCntr   = RegInit(0.U(2.W)) //2-bit counter, reserved for slowing down movement or triggering delayed actions. Used to control zombie speed
+
+  // 5) Secondary zombie: HP, initial‐delay & movement (same logic for both zombies)
+  val zombie1X           = RegInit(640.S(11.W))
+  val zombie1Y           = RegInit(32.S(10.W))
+  val secondaryAnimCnt   = RegInit(0.U(8.W))
+  val secondaryAnimToggle= RegInit(false.B)
+  val hpSecondary        = RegInit(2.U(2.W))        // on spawn → 2 HP
+  val killSecondary      = RegInit(false.B)
+  val killDelaySecondary = RegInit(0.U(16.W))
+  val firstSpawnS        = RegInit(true.B)
+  val secondaryDelayCnt  = RegInit(0.U(16.W))
+  val secondarySlowCntr  = RegInit(0.U(2.W))
+
+  // 6) Projectile registers (sprites 8–10)
+  val projCount     = 3 //constant, only 3 projectile in flight at the same time
+  val projX         = RegInit(VecInit(Seq.fill(projCount)(0.S(11.W)))) //Creates a vector of registers to hold the horizontal (X) position of each projectile
+  val projY         = RegInit(VecInit(Seq.fill(projCount)(0.S(10.W)))) //Same as above, but for vertical (Y) positions.
+  val projActive    = RegInit(VecInit(Seq.fill(projCount)(false.B))) //Boolean vector indicating whether each projectile is active (in flight) or not.
+  val spawnCounter  = RegInit(0.U(16.W)) //It is used to control the firing rate: a new projectile is spawned only when this reaches spawnInterval.
+  val spawnInterval = 112.U    // tuned so exactly 3 fit on screen
+
+  // Explosion effect (sprite 7)
+  val explOn  = RegInit(false.B) //This is a Boolean register that indicates whether the explosion is currently active/visible.
+  val explX   = RegInit(0.S(11.W)) //x coord of explosion
+  val explY   = RegInit(0.S(10.W)) //y coord of explosion
+  val explCnt = RegInit(0.U(6.W))   // counter that keeps track of how long the explosion remains active. up to 63 frames; we only use 30
+
+  // 8) Player health (3 lives)
+  val maxPlayerHP = 3.U(2.W) //defines constant max health. unsigned 2 bit constant with value 3
+  val playerHP    = RegInit(maxPlayerHP) //stores current health, initialised to max health 3
+  val dead        = RegInit(false.B) //stores if player is dead ot alive
+
+// Viewbox control: main vs. game-over screen
+  io.viewBoxX := 0.U
+  io.viewBoxY := Mux(dead, 480.U, 0.U)
+
+  // 7) Constants & lanes
+  val animPeriod    = 30.U //This is the number of frames between animation toggles, such as flipping zombie or shooter sprites for walking/idle effects. Game runes at 30 frames=0.5s at 60fps
+  val despawnThresh = 48.S //This is the X-position threshold where zombies are considered to have reached the player.
+  val delayFrames   = 180.U   // 3s @60Hz for kill‐respawn. A constant that controls how many frames a zombie waits after dying before it respawns. Used to give a pause before a new zombie is spawned, so the screen doesn't instantly fill back up.
+  val lanes         = VecInit(32.S,128.S,224.S,320.S,416.S) //A vector of Y-positions (vertical locations) representing the 5 zombie lanes on the screen.
+  val projMaxX      = 672.S(11.W) // 640 + one column. The maximum X-position a projectile can travel before it's considered off-screen and is deactivated. Screen width 640, Projectiles are allowed to go one tile (32 pixels) past the right edge before being removed.
+
+  /////////////////////////////////////////////////////////////////
+  // Hook entity registers into the sprite I/O each cycle
+  /////////////////////////////////////////////////////////////////
+when(!dead){
+  // Shooter idle (toggle between sprite 0 and sprite 15)
+  val isIdle = shootTimer === 0.U //True when shooting animation is off
+  io.spriteVisible(0)        := isIdle && !shooterAnimToggle //sprite 0 only visible when shooter is idle and toggle off
+  io.spriteXPosition(0)      := shooterX //position sprite horizontally
+  io.spriteYPosition(0)      := shooterY //position sprite vertically
+
+  io.spriteVisible(15)       := isIdle &&  shooterAnimToggle //sprite 15 only visible when shooter is idle and toggle on
+  io.spriteXPosition(15)     := shooterX //horizontal pos of sprite 15
+  io.spriteYPosition(15)     := shooterY //vertical pos of sprite 15
+
+  // Shooter shooting (sprite 1) for 0.25s
+  io.spriteVisible(1)        := (shootTimer > 0.U) //makes sprite 1 visible only while the shooter is firing
+  //These lines position sprite 1 at the same X and Y location as the shooter. Ensures shooting animation appears exactly where the player is, aligned with the other shooter sprites.
+  io.spriteXPosition(1)      := shooterX
+  io.spriteYPosition(1)      := shooterY
+
+  io.spriteVisible(14)   := (hpPrimary =/= 0.U) && !primaryAnimToggle //zombie frame 1 visible only if still alive and first phase animation
+  //shows current position of zombie
+  io.spriteXPosition(14) := zombieX
+  io.spriteYPosition(14) := zombieY
+  io.spriteVisible(13)   := (hpPrimary =/= 0.U) && primaryAnimToggle //zombie frame 2 visible only if zombie alive and second phasse animation
+  //same as 13
+  io.spriteXPosition(13) := zombieX
+  io.spriteYPosition(13) := zombieY
+
+  io.spriteVisible(12)   := (hpSecondary =/= 0.U) && !secondaryAnimToggle && !firstSpawnS //frame 1 of zombie wallk cycle visible only when zombie is alive, first aanimatioin phase and zombie spawned at least once
+  io.spriteXPosition(12) := zombie1X
+  io.spriteYPosition(12) := zombie1Y
+  io.spriteVisible(11)   := (hpSecondary =/= 0.U) && secondaryAnimToggle && !firstSpawnS //same logic as sprite 12
+  io.spriteXPosition(11) := zombie1X
+  io.spriteYPosition(11) := zombie1Y
+
+  for (i <- 0 until projCount) { //loops over each projectile
+    io.spriteVisible(8 + i)   := projActive(i) //Show sprite 8–10 only if the projectile is active. Once the projectile hits something or leaves the screen, it becomes inactive (false.B), and the sprite disappears.
+    //Sets the current X and Y positions of each projectile sprite. projX(i) and projY(i) are registers that are updated every frame to move the projectile forward.
+    io.spriteXPosition(8 + i) := projX(i)
+    io.spriteYPosition(8 + i) := projY(i)
+  }
+
+  // Explosion (sprite 7) above everything
+  io.spriteVisible(7)        := explOn //The explOn signal is a register (a Boolean flag) that turns true.B when a projectile hits a zombie.
+  // explX and explY are updated to match the location of the projectile impact when the zombie is hit.
+  io.spriteXPosition(7)      := explX
+  io.spriteYPosition(7)      := explY
+  // sprite is drawn normally with no flipping.
+  io.spriteFlipHorizontal(7) := false.B
+  io.spriteFlipVertical(7)   := false.B
+
+  // Health hearts (sprites 4, 5, 6) at top-right
+  io.spriteVisible(4)        := playerHP === 3.U //sprite 4 visible only when player at max health
+  //x and y pos of sprite
+  io.spriteXPosition(4)      := 544.S
+  io.spriteYPosition(4)      := 0.S
+  //no flipping of heart icon
+  io.spriteFlipHorizontal(4) := false.B
+  io.spriteFlipVertical(4)   := false.B
+
+  io.spriteVisible(5)        := playerHP >= 2.U //sprite 5 visible only if player has 2 hearts or more
+  io.spriteXPosition(5)      := 576.S
+  io.spriteYPosition(5)      := 0.S
+  io.spriteFlipHorizontal(5) := false.B
+  io.spriteFlipVertical(5)   := false.B
+
+  io.spriteVisible(6)        := playerHP >= 1.U //sprite 6 visible only if player has 1 heart or more
+  io.spriteXPosition(6)      := 608.S
+  io.spriteYPosition(6)      := 0.S
+  io.spriteFlipHorizontal(6) := false.B
+  io.spriteFlipVertical(6)   := false.B
+
+  // Two-bar timer (sprites 2, 3) to the left of hearts
+  // sprite 2 is the left end (mirrored), sprite 3 the right end
+  io.spriteVisible(3)        := timerBars >= 2.U //shows sprite 3 only if timer has 2 bars left
+  //x y pos of timer
+  io.spriteXPosition(3)      := 512.S   // 32px left of sprite 4 @544
+  io.spriteYPosition(3)      := 0.S
+  //no mirroring for timer bar
+  io.spriteFlipHorizontal(3) := false.B
+  io.spriteFlipVertical(3)   := false.B
+
+  io.spriteVisible(2)        := timerBars >= 1.U //shows sprite 2 only if at least 1 time bar remains
+  io.spriteXPosition(2)      := 480.S   // 32px left of sprite 3
+  io.spriteYPosition(2)      := 0.S
+  io.spriteFlipHorizontal(2) := true.B   // mirror it to form the left cap of the bar
+  io.spriteFlipVertical(2)   := false.B //no vertical flipping
+}
+
+  /////////////////////////////////////////////////////////////////
+  // Main FSM: Idle → Compute → Done
+  /////////////////////////////////////////////////////////////////
+
+  switch(stateReg) {
+    is(idle) { //this case only executes when the fsm is in the idle state
+      // 1) start on centre‐press
+      when(io.btnC && !btnC_r && !started) { //detects rising edge when button is pressed, !started ensures game havent started, prevents re-triggering game in progess
+        started := true.B //when game hasnt started, this kicks off game
+      }
+
+      // 2) game‐over reset on centre‐press
+      when(dead && io.btnC && !btnC_r) { //The game is over (dead), and the player just pressed the center button — not holding it, but a fresh press. Triggers a full game reset
+        // restore lives
+        playerHP    := maxPlayerHP
+        dead        := false.B
+
+        // re-arm zombie spawns
+        firstSpawnP := true.B
+        firstSpawnS := true.B
+
+        // reset shooter
+        shooterX    :=  0.S
+        shooterY    := 224.S //set pear shooter to center of screen
+
+        // clear projectiles
+        spawnCounter := 0.U //Resets the projectile spawn timer to 0.
+        for(i <- 0 until projCount) { //loop that iterates over all projectiles (3 total)
+          projActive(i) := false.B //deactivates the 3 projectile shots.
+        }
+
+        // **clear both zombies**
+        // Primary zombie back off-screen & reset HP/flags
+        zombieX           := 640.S //places zombie at right side of screen (invisible at start)
+        hpPrimary         := 2.U //resets zombie to full health
+        killPrimary       := false.B //Indicates that the zombie is alive and not in a "dying animation" or kill-delay phase.
+        killDelayPrimary  := 0.U //Resets the delay counter used after the zombie dies.
+        primaryAnimCnt    := 0.U //Resets the zombie’s animation frame counter.  ensures the animation is synced and clean when the zombie spawns.
+        primaryAnimToggle := false.B //Resets the zombie’s animation flip bit to its initial frame.
+        primarySlowCntr   := 0.U //Resetting it ensures speed control works as expected if zombie is later wounded.
+
+        // Secondary zombie back off-screen & reset HP/flags, code logic same as primary zombie
+        zombie1X           := 640.S
+        hpSecondary        := 2.U
+        killSecondary      := false.B
+        killDelaySecondary := 0.U
+        secondaryAnimCnt   := 0.U
+        secondaryAnimToggle:= false.B
+        secondarySlowCntr  := 0.U
+        secondaryDelayCnt  := 0.U
+
+        // allow restart
+        started := false.B
+
+        // reset timer
+        timerFrameCnt := 0.U
+        timerBars     := 2.U
+      }
+
+      // 3) normal run each VGA‐frame if started & not dead
+      when(started && !dead && io.newFrame) { //If the game has started, the player is alive, and a new frame just started, then enter the compute state and update the game logic.
+        stateReg := compute //changes the current FSM state from idle to compute.
+      }
+    }
+
+    is(compute) {
+      // Shooter movement (2 px/frame)
+      when(io.btnU && shooterY > 0.S){ //when up button is pressed and if shooter vertical pos at top of the screen. If shooterY is already ≤ 0.S, this prevents it from moving off-screen.
+        shooterY := shooterY - 2.S //moves shooter upward by 2 pixels
+      }
+        .elsewhen(io.btnD && shooterY < (480.S - 32.S)) { //480=screen height, 32=shooter height, 480.s-32.s ensures shooter stays fully visible
+          shooterY := shooterY + 2.S //moves shooter downward by 2 pixels
+        }
+
+      // Projectile spawn (max 3 in flight) at constant interval
+      spawnCounter := Mux(spawnCounter < spawnInterval, spawnCounter + 1.U, spawnCounter) //Increments the spawnCounter each frame up to a fixed threshold (spawnInterval).
+      val timeToFire = spawnCounter === spawnInterval //Detects when it’s time to spawn/fire a new projectile. When spawnCounter reaches spawnInterval.
+      val freeIdx    = PriorityEncoder(~projActive.asUInt) //projActive is a vector of 3 Booleans that tracks which projectiles are active. ~projActive.asUInt inverts the bits (1 = available). PriorityEncoder returns the index of the first available slot.
+      when(started && timeToFire && freeIdx < projCount.U) { //condition game started and time to fire and free projectile slot is available
+        projActive(freeIdx) := true.B //marks the selected projectile as active
+        //sets projectile to shooters x and y
+        projX(freeIdx)      := shooterX
+        projY(freeIdx)      := shooterY
+        spawnCounter        := 0.U //resets timer to wait for next fire
+      }
+
+      // — arm shooting animation
+      when(started && timeToFire) {
+        shootTimer := shootDuration //This sets the shootTimer to a fixed value (shootDuration = 15.U). shootTimer is a countdown that controls how long the "shooting" animation is displayed.
+      }
+      // — countdown shooting frame
+      when(shootTimer > 0.U) { //check if shooting timer is still active
+        shootTimer := shootTimer - 1.U //Decrements the timer by 1 on each frame.
+      }
+
+      // Shooter idle animation toggle (once per frame, same as zombies)
+      when (shootTimer === 0.U) { //checks that the shooter is not currently firing.
+        shooterAnimCnt := shooterAnimCnt + 1.U //counter that increments once per frame.
+        when (shooterAnimCnt >= idlePeriod) { //When enough idle time has passed, it triggers an animation toggle.
+          shooterAnimCnt    := 0.U //resets counter
+          shooterAnimToggle := ~shooterAnimToggle //swicthes between 2 idle sprites
+        }
+      }
+
+      // Projectile motion (2× zombie speed) & collision
+      for (i <- 0 until projCount) { loops over the 3 projectiles to handle
+        when(projActive(i)) { //ensures that only active projectiles (on-screen and flying) are processed.
+          val x = projX(i) + 2.S //This calculates the next X-position of the projectile (it moves 2 pixels/frame to the right).
+          projX(i) := x //Updates the projectile’s actual X-position with the new value.
+          when(x >= projMaxX) { projActive(i) := false.B } //If the projectile reaches or passes the right edge of the screen, it's deactivated.
+          when(hpPrimary =/= 0.U && x >= zombieX    && x <  zombieX + 32.S &&
+            projY(i) >= zombieY && projY(i) <  zombieY + 32.S) { //checks if zombie is alive and x and y pos overlaps. If all true, collision detected
+            projActive(i) := false.B //deactivate projectile
+            when(hpPrimary === 2.U) { hpPrimary := 1.U } //if zombie full health, health drop to 1
+              .otherwise {
+                hpPrimary       := 0.U //if wounded mark as dead
+                killPrimary     := true.B //trigger respawn delay
+                killDelayPrimary:= 0.U //reset timer
+              }
+            // … after projActive(i) := false.B …
+            explOn  := true.B //show explosion effect
+            explX   := x      // impact at projectile X
+            explY   := projY(i)
+            explCnt := 30.U   // show for 30 frames (~0.5s)
+          }
+          when(hpSecondary =/= 0.U &&
+            x >= zombie1X    && x <  zombie1X + 32.S &&
+            projY(i) >= zombie1Y && projY(i) <  zombie1Y + 32.S) {
+            projActive(i) := false.B
+            when(hpSecondary === 2.U) { hpSecondary := 1.U }
+              .otherwise {
+                hpSecondary        := 0.U
+                killSecondary      := true.B
+                killDelaySecondary := 0.U
+              }
+            // … after projActive(i) := false.B …
+            explOn  := true.B
+            explX   := x      // impact at projectile X
+            explY   := projY(i)
+            explCnt := 30.U   // show for 30 frames (~0.5s)
+          }
+        }
+      }
+
+      // Explosion timer (0.5s = 30 frames)
+      when(explOn) { //checks if explosion is active
+        when(explCnt > 0.U) { explCnt := explCnt - 1.U } //if timer >0, decrement by 1 every frame
+          .otherwise          { explOn  := false.B } //nce counter reaches 0, hide explosion sprite
+      }
+
+      // ── update 60s timer (30s per bar @60Hz → 1800 frames) ──
+      when (timerFrameCnt === (30.U * 60.U - 1.U)) { //condition checks if 30s has passed
+        timerFrameCnt := 0.U //reset counter to start next 30s counter
+        timerBars     := timerBars - 1.U //decrement the timebars from 2-1-0
+      } .otherwise {
+        timerFrameCnt := timerFrameCnt + 1.U //frame<1799, keep counting up 1 frame at a time
+
+      // if we’ve dropped below 1 bar (i.e. timerBars === 0), end game
+      when (timerBars === 0.U) { dead := true.B }
+
+      // Lose a life if a primary zombie walks past the 2/3-column
+      when(!dead && !firstSpawnP && !killPrimary && zombieX <= despawnThresh) {
+        playerHP := playerHP - 1.U
+      }
+      // Lose a life if a secondary zombie walks past the 2/3-column
+      when(!dead && !firstSpawnS && !killSecondary && zombie1X <= despawnThresh) {
+        playerHP := playerHP - 1.U
+      }
+      // Game-over latch
+      when(playerHP === 0.U) {
+        dead := true.B
+      }
+
+      // Primary spawn/despawn & HP reset on ANY respawn
+      val normalSpawnP = firstSpawnP || (!firstSpawnP && killPrimary === false.B && zombieX <= despawnThresh) //on first spawn creates zombie immediately, and respawn when zombie walk off screen without getting killed
+      val killRespawnP = killPrimary && killDelayPrimary >= delayFrames //ensures that killed zombies don’t instantly respawn, giving time for explosion animations or game pacing.
+      when(killPrimary && killDelayPrimary < delayFrames) { //check if zombie die and delay not completed
+        killDelayPrimary := killDelayPrimary + 1.U //increment delay until killrespawnp becomes true and zombie will respawn
+      }
+      val spawnP = normalSpawnP || killRespawnP //true when zombie normally respawn or after it has been killed
+      when(spawnP) {
+        zombieX          := 640.S
+        zombieY          := lanes(mixed(4,0) % 5.U) //randomly chooses 1 if the lanes for zombie to apper in
+        firstSpawnP      := false.B //preveents first spawn logic from repeating
+        hpPrimary        := 2.U //zombie start at full hhealth
+        killPrimary      := false.B //clears killed flag, this is a fresh zombie
+        killDelayPrimary := 0.U //reset delay timer counting since last death
+        primarySlowCntr  := 0.U //Resets any internal speed control counters related to the zombie’s wounded state.
+      }.otherwise {
+        when(hpPrimary === 2.U) {
+          zombieX := zombieX - baseSpeed //full health, move at normal speed
+        } .otherwise {
+          zombieX := zombieX - woundedSpeed //half health, move slower
+        }
+        primaryAnimCnt := primaryAnimCnt + 1.U //counter increment when zombie is active
+        when(primaryAnimCnt >= animPeriod) { //when counter exceed animperiod
+          primaryAnimCnt    := 0.U //counter reset to 0
+          primaryAnimToggle := ~primaryAnimToggle //toggle zombie sprite
+        }
+      }
+
+      // Secondary initial‐delay, spawn/despawn & HP reset on ANY respawn
+      when(started && firstSpawnS) {
+        secondaryDelayCnt := secondaryDelayCnt + 1.U
+      } //creating a pacing gap between the appearance of the primary and secondary zombies. delay only happen once during initial phase of game
+      val initialSpawnS  = firstSpawnS && secondaryDelayCnt >= delayFrames //Detects if it's time for the first-ever spawn of the secondary zombie.
+      val normalSpawnS   = !firstSpawnS && !killSecondary && zombie1X <= despawnThresh //Checks if the zombie walked off-screen without being shot and should respawn.
+      val killRespawnS   = killSecondary && killDelaySecondary >= delayFrames //Handles respawn after the zombie was killed (e.g. shot by the player).
+      when(killSecondary && killDelaySecondary < delayFrames) {
+        killDelaySecondary := killDelaySecondary + 1.U
+      } //If the zombie was killed, and it hasn't waited long enough, Then increment the killDelaySecondary counter every frame until the delay is met.
+      val spawnSecondary = initialSpawnS || normalSpawnS || killRespawnS //resets the zombie’s position, HP, and animation state.
+      when(spawnSecondary) {
+        zombie1X            := 640.S
+        zombie1Y            := lanes(mixed(12,8) % 5.U)
+        firstSpawnS         := false.B
+        hpSecondary         := 2.U
+        killSecondary       := false.B
+        killDelaySecondary  := 0.U
+        secondaryDelayCnt   := 0.U
+        secondarySlowCntr   := 0.U
+      }.otherwise {
+        when(hpSecondary === 2.U) {
+          zombie1X := zombie1X - baseSpeed
+        } .otherwise {
+          zombie1X := zombie1X - woundedSpeed
+        }
+        secondaryAnimCnt := secondaryAnimCnt + 1.U
+        when(secondaryAnimCnt >= animPeriod) {
+          secondaryAnimCnt    := 0.U
+          secondaryAnimToggle := ~secondaryAnimToggle
+        }
+      }
+
+      stateReg := done
+    }
+
+    is(done) {
+      io.frameUpdateDone := true.B
+      stateReg           := idle
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// End of file
+//////////////////////////////////////////////////////////////////////////////
